@@ -37,6 +37,7 @@ translate Anthropic↔OpenAI for the "run Claude *on* Qwen" path.
 |---|---|---|
 | `delegate(task, input_text?, max_tokens?, temperature?)` | the model's answer (goes into Claude's context) | **compact** results: summaries, classification, field extraction to JSON, short rewrites, Q&A over a snippet |
 | `transform_file(instruction, path, output_path?, ...)` | a short status line only | **bulky** output: generated code, whole-file rewrites, bulk reformatting, translating a file — the big text is written to disk and never enters Claude's context |
+| `run_local_agent(task, workdir?, max_steps?, timeout_s?, allow_shell?, allow_web?)` | compact JSON: summary + files_changed + step log | a bounded **multi-step** subtask where the model reads/writes files itself in a sandbox (scaffold files, mechanical multi-file edits) — see [Agent policy](#agent-policy) |
 | `health()` | up/down + served model id | quick backend check |
 
 ### Why two tools — the token-saving rule
@@ -55,6 +56,46 @@ refactors, whole-file translation. Keep architecture, hard reasoning, and final
 review on Claude.
 
 ---
+
+## Agent policy
+
+`run_local_agent` is the only tool that lets the local model *act* — a small
+ReAct loop (`server/local_agent.py`) where Qwen calls tools itself and iterates.
+Because a ~3B-active model is not a reliable autonomous agent, and because it
+runs without a human approving each step, the policy is deliberately tight.
+These defaults are chosen for a driver (the online Claude) that hands off small,
+well-scoped work and then verifies the result.
+
+**Hard sandbox (the real guardrail).** Every file/dir/command path is resolved
+and must stay under `LOCAL_AGENT_ROOT` (default `C:\AI\agent-sandbox`).
+Traversal (`..`), absolute paths, and symlink escapes are rejected **in Python**,
+so confinement does not rely on the model behaving. To point the agent at a real
+project, set `LOCAL_AGENT_ROOT` to that project's folder — the model still cannot
+escape whatever root the human configured.
+
+**What it can do**
+
+| Capability | Default | Notes |
+|---|---|---|
+| `read_file` / `write_file` / `list_dir` | **on** | text files, inside the sandbox only |
+| `finish` | on | ends the loop with a summary |
+| `run_command` (shell) | **off** | `allow_shell=true` — cwd-confined, per-command timeout, destructive-pattern deny-list. Only for trusted, reviewed tasks. |
+| `fetch_url` (web GET) | **off** | `allow_web=true` — http(s) only, size/time capped. Fetched text is **untrusted** (prompt-injection risk with a small model). |
+| anything outside the sandbox | **never** | rejected before the tool runs |
+
+**Limits**
+
+| | Default | Hard cap | Why |
+|---|---|---|---|
+| `max_steps` (tool rounds) | 12 | 30 | past ~15 steps an A3B model's tool-calling degrades and it tends to loop |
+| `timeout_s` (wall clock) | 180 | 600 | loop is killed if exceeded |
+
+**Contract.** Runs fully local (zero Anthropic tokens). Returns a compact JSON
+result — `status`, `summary`, `files_changed`, `steps_used`, `log` — not a
+transcript. The driver is expected to **review `files_changed` before trusting
+them**. Good tasks: scaffold a few files, mechanical multi-file edits, reformat a
+folder. Bad tasks: open-ended "figure it out", anything needing judgement, or
+anything that must be right without review.
 
 ## Setup
 

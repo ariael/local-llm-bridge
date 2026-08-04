@@ -40,6 +40,11 @@ import urllib.request
 
 from mcp.server import MCPServer
 
+# Make the sibling module importable no matter how this server is launched.
+import sys as _sys
+_sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import local_agent
+
 # --- Configuration (override via environment in .mcp.json) ------------------
 # Base URL of llama-server's OpenAI-compatible API. 127.0.0.1 on purpose, not
 # "localhost": on this machine localhost resolves IPv6 (::1) first and wastes
@@ -176,6 +181,37 @@ def transform_file(instruction: str, path: str, output_path: str = "", max_token
     with open(target, "w", encoding="utf-8") as fh:
         fh.write(text)
     return "OK: wrote %d chars to %s%s" % (len(text), target, footer)
+
+
+@mcp.tool()
+def run_local_agent(task: str, workdir: str = "", max_steps: int = 12, timeout_s: int = 180, allow_shell: bool = False, allow_web: bool = False) -> str:
+    """Run the local Qwen model as a confined SUB-AGENT for a bounded task.
+
+    Unlike `delegate` (a single completion), this runs a small ReAct loop: the
+    local model can read/write files and list dirs inside a sandbox, then calls
+    `finish`. Everything is hard-confined to LOCAL_AGENT_ROOT — the model cannot
+    touch the rest of the disk. Runs fully local (zero Anthropic tokens); you get
+    back only a compact summary + list of changed files to VERIFY.
+
+    Use for small, well-scoped work: scaffold files, mechanical multi-file edits,
+    reformat/transform within a folder. Keep tasks tight — an A3B model is not a
+    reliable open-ended autonomous agent; always review the result.
+
+    Args:
+        task: The bounded task, described clearly and self-contained.
+        workdir: Optional subdirectory (under the sandbox root) to work in.
+        max_steps: Tool-call rounds allowed (default 12, capped at 30).
+        timeout_s: Wall-clock limit (default 180, capped at 600).
+        allow_shell: Enable a cwd-confined run_command tool. OFF by default —
+            only enable for trusted, reviewed tasks that truly need it.
+        allow_web: Enable an http(s) GET fetch_url tool. OFF by default — fetched
+            content is untrusted (prompt-injection risk with a small model).
+    """
+    result = local_agent.run_agent(
+        task=task, workdir=(workdir or None), max_steps=max_steps,
+        timeout_s=timeout_s, allow_shell=allow_shell, allow_web=allow_web,
+    )
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
