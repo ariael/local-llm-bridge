@@ -38,7 +38,25 @@ translate Anthropic↔OpenAI for the "run Claude *on* Qwen" path.
 | `delegate(task, input_text?, max_tokens?, temperature?)` | the model's answer (goes into Claude's context) | **compact** results: summaries, classification, field extraction to JSON, short rewrites, Q&A over a snippet |
 | `transform_file(instruction, path, output_path?, ...)` | a short status line only | **bulky** output: generated code, whole-file rewrites, bulk reformatting, translating a file — the big text is written to disk and never enters Claude's context |
 | `run_local_agent(task, workdir?, max_steps?, timeout_s?, allow_shell?, allow_web?)` | compact JSON: summary + files_changed + step log | a bounded **multi-step** subtask where the model reads/writes files itself in a sandbox (scaffold files, mechanical multi-file edits) — see [Agent policy](#agent-policy) |
-| `health()` | up/down + served model id | quick backend check |
+| `start_backend()` | status line | pre-warm the model before a batch (optional — delegation tools auto-start it) |
+| `stop_backend(force?)` | status line | **free the GPU** immediately (e.g. before gaming) |
+| `health()` | up/down, whether we own it, idle time | check without starting anything |
+
+### On-demand GPU (shares the card with games)
+
+The model is **not** an always-on service — the GPU is shared with games. Instead:
+
+- **Auto-start on first use.** The card stays free until Claude actually calls
+  `delegate` / `transform_file` / `run_local_agent`; the first call spins up
+  llama-server (loads the model, ~15s) and reuses it after.
+- **Idle auto-stop.** After `LOCAL_LLM_IDLE_STOP_S` seconds (default 600) with no
+  delegation, the backend stops itself and releases VRAM.
+- **Explicit control.** `stop_backend` frees the GPU right now; `start_backend`
+  pre-warms it. `health` reports status without starting anything.
+
+The backend is launched detached and tracked by a PID file, so `stop_backend`
+works even from a later session. Set `LOCAL_LLM_AUTOSTART=0` to require a manual
+`scripts\Start-LlamaServer.ps1` instead.
 
 ### Why two tools — the token-saving rule
 

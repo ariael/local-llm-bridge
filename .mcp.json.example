@@ -1,5 +1,5 @@
 {
-  "//": "Copy the block below into a project's .mcp.json (or merge into ~/.claude settings) to expose the local Qwen delegation tools to that Claude Code session. Adjust the python path if you use a venv.",
+  "//": "Copy the block below into a project's .mcp.json, or register globally so it's available in every session: `claude mcp add -s user local-llm -- python C:\\GitHub\\local-llm-bridge\\server\\local_llm_mcp.py`. The backend starts on demand (no always-on GPU use) and auto-stops when idle; stop_backend frees the GPU immediately (e.g. for gaming).",
   "mcpServers": {
     "local-llm": {
       "command": "python",
@@ -7,7 +7,17 @@
       "env": {
         "LOCAL_LLM_BASE": "http://127.0.0.1:8001/v1",
         "LOCAL_LLM_MODEL": "local-model",
-        "LOCAL_LLM_TIMEOUT": "300"
+        "LOCAL_LLM_TIMEOUT": "300",
+
+        "LOCAL_LLM_AUTOSTART": "1",
+        "LOCAL_LLM_IDLE_STOP_S": "600",
+        "LOCAL_LLM_STARTUP_TIMEOUT_S": "240",
+
+        "LOCAL_LLM_LLAMA_EXE": "C:\\AI\\llama.cpp\\vulkan\\llama-server.exe",
+        "LOCAL_LLM_MODEL_PATH": "C:\\AI Models\\unsloth\\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
+        "LOCAL_LLM_CTX": "32768",
+
+        "LOCAL_AGENT_ROOT": "C:\\AI\\agent-sandbox"
       }
     }
   }

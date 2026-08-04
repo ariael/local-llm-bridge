@@ -44,6 +44,7 @@ from mcp.server import MCPServer
 import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import local_agent
+import backend
 
 # --- Configuration (override via environment in .mcp.json) ------------------
 # Base URL of llama-server's OpenAI-compatible API. 127.0.0.1 on purpose, not
@@ -66,6 +67,10 @@ def _chat(system, user, max_tokens, temperature):
     returns an error — the caller (a tool) turns that into a tool error so the
     online Claude sees a clear signal instead of a silent empty result.
     """
+    ok, msg = backend.ensure()  # lazily spin up llama-server if it's not running
+    if not ok:
+        raise RuntimeError("local backend unavailable: %s" % msg)
+
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -207,24 +212,48 @@ def run_local_agent(task: str, workdir: str = "", max_steps: int = 12, timeout_s
         allow_web: Enable an http(s) GET fetch_url tool. OFF by default — fetched
             content is untrusted (prompt-injection risk with a small model).
     """
+    ok, msg = backend.ensure()  # spin up llama-server on demand
+    if not ok:
+        return json.dumps({"status": "backend_error", "summary": msg}, ensure_ascii=False)
+    backend.touch()
     result = local_agent.run_agent(
         task=task, workdir=(workdir or None), max_steps=max_steps,
         timeout_s=timeout_s, allow_shell=allow_shell, allow_web=allow_web,
     )
+    backend.touch()
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
+def start_backend() -> str:
+    """Start the local llama-server on the GPU (loads the model into VRAM).
+
+    You normally don't need this — the delegation tools auto-start the backend on
+    first use. Call it to pre-warm before a batch of local work. The backend also
+    auto-stops after an idle period, and can be stopped explicitly with
+    `stop_backend` to free the GPU (e.g. for gaming).
+    """
+    ok, msg = backend.ensure()
+    return ("OK: " if ok else "FAILED: ") + msg + "\n" + backend.status()
+
+
+@mcp.tool()
+def stop_backend(force: bool = False) -> str:
+    """Stop the local llama-server and free the GPU (e.g. before playing a game).
+
+    Only stops a backend this tool started, unless force=true. The delegation
+    tools will transparently start it again next time they're used.
+    """
+    return backend.stop(force=force)
+
+
+@mcp.tool()
 def health() -> str:
-    """Check whether the local llama-server backend is up and which model it serves."""
-    url = LLAMA_BASE.rstrip("/") + "/models"
-    try:
-        with urllib.request.urlopen(url, timeout=5) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as exc:
-        return "DOWN: %s unreachable (%s)" % (url, exc)
-    ids = [m.get("id") for m in (body.get("data") or [])]
-    return "UP: %s serving %s" % (LLAMA_BASE, ", ".join(ids) or "(no models listed)")
+    """Report whether the local backend is up, whether we own it, and idle time.
+
+    Does NOT start anything — safe to call while gaming to check the GPU is free.
+    """
+    return backend.status()
 
 
 if __name__ == "__main__":
