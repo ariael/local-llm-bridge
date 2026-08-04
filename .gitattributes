@@ -1,0 +1,6 @@
+# Normalize line endings so the repo is clean cross-platform.
+# Text files are stored with LF in the repo; PowerShell scripts keep CRLF on
+# checkout (Windows-only, and some PS tooling is picky about EOLs).
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.gguf binary

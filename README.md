@@ -80,6 +80,18 @@ review on Claude.
 4. **Verify** from a Claude Code session: call the `health` tool — it should
    report `UP: ... serving local-model`.
 
+### Smoke test
+
+With the backend running, check the whole chain (health, delegate, transform_file)
+without needing a Claude Code session:
+
+```bash
+python scripts/smoke_test.py
+```
+
+Exit code 0 means all three tools answered correctly (a summary, a `positive`
+classification, a JSON extraction, and an uppercased temp file).
+
 ---
 
 ## Production status & backlog
@@ -119,3 +131,22 @@ To do:
 Both share the same llama.cpp Vulkan build and model files. The benchmark
 rationale (measure prefill, Vulkan > HIP) lives in
 `C:\AI\local-llm\reports\phase2-summary.md`.
+
+---
+
+## Notes / gotchas (learned the hard way)
+
+- **Qwen3 thinking must be off for worker tasks.** Qwen3 is a reasoning model;
+  left on, it spends the whole token budget in a `<think>` block (llama.cpp puts
+  that in `message.reasoning_content`) and `message.content` comes back empty.
+  The server sends `chat_template_kwargs.enable_thinking=false` on every call.
+- **`mcp` 2.x renamed `FastMCP` → `MCPServer`** (same `@tool()` decorator, same
+  `run()` defaulting to stdio). Requires `mcp>=2.0.0`.
+- **Use `127.0.0.1`, never `localhost`.** On this box `localhost` resolves IPv6
+  (`::1`) first and wastes ~2s per request failing over to IPv4.
+- The Vulkan `llama-server.exe` is a ~9 KB thin loader next to a
+  `llama-server-impl.dll` — that small size is normal, not a broken build.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
