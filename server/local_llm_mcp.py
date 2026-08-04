@@ -249,17 +249,20 @@ def stop_backend(force: bool = False) -> str:
 
 
 @mcp.tool()
-def check_model_update() -> str:
-    """Check (read-only) whether a newer GGUF of the tracked model is available.
+def check_model_update(force: bool = False) -> str:
+    """Report whether a newer GGUF of the tracked model is available.
 
-    Queries Hugging Face for the tracked repo+quant (LOCAL_LLM_HF_REPO /
-    LOCAL_LLM_HF_QUANT) and compares against the local manifest. Downloads
-    nothing — reports up-to-date / update-available / not-tracked. Actually
-    fetching a newer model is a deliberate, ~20 GB step done via
-    `python server/model_update.py apply --commit` (asks first by being dry-run
-    by default), not from this tool.
+    Returns the cached result of the server's own ~monthly self-check (no
+    external scheduler involved). Pass force=true to re-check Hugging Face right
+    now. Downloads nothing — actually fetching a newer model is a deliberate,
+    ~18 GB step done via `python server/model_update.py apply --commit`.
     """
-    return model_update.check()
+    r = model_update.maybe_check(force=force)
+    if r["fresh"]:
+        return "[checked just now] " + r["verdict"]
+    if r["age_days"] is None:
+        return r["verdict"]
+    return "[cached, checked %.0f days ago] %s" % (r["age_days"], r["verdict"])
 
 
 @mcp.tool()
@@ -269,6 +272,20 @@ def health() -> str:
     Does NOT start anything — safe to call while gaming to check the GPU is free.
     """
     return backend.status()
+
+
+# Self-run the model-update check in the background at startup. maybe_check()
+# throttles itself to ~monthly via a state file, so this is a no-op most starts
+# and never blocks startup or a tool call. No external scheduler needed.
+def _bg_model_check():
+    try:
+        model_update.maybe_check()
+    except Exception:
+        pass
+
+
+import threading as _threading
+_threading.Thread(target=_bg_model_check, name="model-update-selfcheck", daemon=True).start()
 
 
 if __name__ == "__main__":

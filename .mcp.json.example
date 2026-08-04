@@ -19,7 +19,7 @@
 
         "LOCAL_AGENT_ROOT": "C:\\AI\\agent-sandbox",
 
-        "LOCAL_LLM_HF_REPO": "unsloth/Qwen3-Coder-30B-A3B-GGUF",
+        "LOCAL_LLM_HF_REPO": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
         "LOCAL_LLM_HF_QUANT": "UD-Q4_K_XL"
       }
     }

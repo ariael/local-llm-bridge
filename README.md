@@ -112,9 +112,12 @@ only — no `huggingface_hub` needed.
   python server/model_update.py apply --commit    # download + verify
   ```
 
-The check is safe to run on a schedule (e.g. a Claude Code routine) so you're
-notified when a newer model ships; the download stays a deliberate, confirmed
-step because it's large and a new model should be re-verified
+**No external scheduler needed.** The MCP server runs the check itself in the
+background at startup, throttled to once per `LOCAL_LLM_UPDATE_CHECK_DAYS`
+(default 30) via a state file — so it self-limits to ~monthly no matter how
+often the server starts. `check_model_update` returns that cached verdict (or
+`force=true` to re-check now). The download stays a deliberate, confirmed step
+because it's large and a new model should be re-verified
 (`Test-ToolCalling.ps1`) before you rely on it.
 
 ## Agent policy

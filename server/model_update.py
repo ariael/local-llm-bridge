@@ -36,6 +36,9 @@ MODEL_PATH = os.environ.get("LOCAL_LLM_MODEL_PATH", r"C:\AI Models\unsloth\Qwen3
 MODEL_DIR = os.environ.get("LOCAL_LLM_MODEL_DIR", "") or os.path.dirname(MODEL_PATH)
 MANIFEST = os.path.join(MODEL_DIR, ".model_manifest.json")
 
+STATE = os.path.join(MODEL_DIR, ".model_check.json")
+CHECK_INTERVAL_DAYS = int(os.environ.get("LOCAL_LLM_UPDATE_CHECK_DAYS", "30"))
+
 _API = "https://huggingface.co/api/models/%s"
 _RESOLVE = "https://huggingface.co/%s/resolve/main/%s"
 
@@ -114,6 +117,47 @@ def check(repo=None, quant=None):
     return ("%s\nUPDATE AVAILABLE:\n  installed: %s (%s)\n  remote:    %s (%.1f GB)\n"
             "Run apply with commit=true to download." %
             (head, man.get("filename"), man.get("sha256", "?")[:12], rt["filename"], size_gb))
+
+
+def _read_state():
+    try:
+        with open(STATE, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def maybe_check(interval_days=None, force=False):
+    """Run check() at most once per interval (default monthly) and cache it.
+
+    This is how the MCP server self-schedules the update check WITHOUT an
+    external scheduler: it calls this on startup; the state file throttles it to
+    ~monthly no matter how often the server restarts. Non-fatal and returns a
+    dict {verdict, checked_at, age_days, fresh}.
+    """
+    interval_days = CHECK_INTERVAL_DAYS if interval_days is None else interval_days
+    st = _read_state()
+    now = time.time()
+    age_days = ((now - st["checked_at"]) / 86400.0) if (st and st.get("checked_at")) else None
+
+    if force or age_days is None or age_days >= interval_days:
+        if not HF_REPO:
+            return {"verdict": "not tracked (LOCAL_LLM_HF_REPO unset)",
+                    "checked_at": None, "age_days": None, "fresh": False}
+        verdict = check()
+        # Never throttle on an error (network blip, bad repo id) — otherwise a
+        # transient failure would suppress checks for a whole month. Only a real
+        # verdict gets cached; errors are returned but retried next start.
+        if not verdict.startswith("ERROR"):
+            try:
+                with open(STATE, "w", encoding="utf-8") as fh:
+                    json.dump({"checked_at": now, "verdict": verdict}, fh, indent=2)
+            except OSError:
+                pass
+        return {"verdict": verdict, "checked_at": now, "age_days": 0.0, "fresh": True}
+
+    return {"verdict": st["verdict"], "checked_at": st["checked_at"],
+            "age_days": round(age_days, 1), "fresh": False}
 
 
 def _download_resumable(url, dest_part, expected_size, log=sys.stderr):
