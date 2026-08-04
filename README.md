@@ -58,6 +58,22 @@ The backend is launched detached and tracked by a PID file, so `stop_backend`
 works even from a later session. Set `LOCAL_LLM_AUTOSTART=0` to require a manual
 `scripts\Start-LlamaServer.ps1` instead.
 
+**Free the GPU when Claude Code exits.** `server/backend.py` doubles as a CLI
+that stops only the backend it started, ideal for a `SessionEnd` hook so the
+card is free the moment you close the session:
+
+```bash
+python C:/GitHub/local-llm-bridge/server/backend.py stop     # kill our backend
+python C:/GitHub/local-llm-bridge/server/backend.py status   # DOWN/UP, no side effects
+```
+
+```json
+// ~/.claude/settings.json
+"hooks": { "SessionEnd": [ { "hooks": [
+  { "type": "command", "command": "python C:/GitHub/local-llm-bridge/server/backend.py stop" }
+] } ] }
+```
+
 ### Why two tools — the token-saving rule
 
 An MCP tool **result still costs Claude tokens** (it flows back into context).

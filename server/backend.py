@@ -197,3 +197,19 @@ def _start_watchdog():
                 return
 
     threading.Thread(target=_loop, name="backend-idle-watchdog", daemon=True).start()
+
+
+if __name__ == "__main__":
+    # Standalone CLI so a SessionEnd hook can free the GPU when Claude Code exits:
+    #   python backend.py stop          (kills only the backend we started)
+    #   python backend.py stop --force   (kill even if started elsewhere)
+    #   python backend.py start | status
+    import sys
+    _action = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if _action == "stop":
+        print(stop(force=("--force" in sys.argv)))
+    elif _action == "start":
+        ok, msg = ensure()
+        print(("OK: " if ok else "FAILED: ") + msg)
+    else:
+        print(status())
