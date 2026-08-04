@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""
+r"""
 local-llm-bridge — MCP server exposing a local Qwen model (on the GPU) as a set
 of delegation tools for an *online* Claude Code session.
 
@@ -38,7 +38,7 @@ import time
 import urllib.error
 import urllib.request
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 # --- Configuration (override via environment in .mcp.json) ------------------
 # Base URL of llama-server's OpenAI-compatible API. 127.0.0.1 on purpose, not
@@ -51,7 +51,7 @@ MODEL = os.environ.get("LOCAL_LLM_MODEL", "local-model")
 # generation can take a while on a 24 GB card.
 TIMEOUT = float(os.environ.get("LOCAL_LLM_TIMEOUT", "300"))
 
-mcp = FastMCP("local-llm")
+mcp = MCPServer("local-llm")
 
 
 def _chat(system, user, max_tokens, temperature):
