@@ -1,0 +1,14 @@
+{
+  "//": "Copy the block below into a project's .mcp.json (or merge into ~/.claude settings) to expose the local Qwen delegation tools to that Claude Code session. Adjust the python path if you use a venv.",
+  "mcpServers": {
+    "local-llm": {
+      "command": "python",
+      "args": ["C:\\GitHub\\local-llm-bridge\\server\\local_llm_mcp.py"],
+      "env": {
+        "LOCAL_LLM_BASE": "http://127.0.0.1:8001/v1",
+        "LOCAL_LLM_MODEL": "local-model",
+        "LOCAL_LLM_TIMEOUT": "300"
+      }
+    }
+  }
+}
