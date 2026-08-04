@@ -17,7 +17,10 @@
         "LOCAL_LLM_MODEL_PATH": "C:\\AI Models\\unsloth\\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf",
         "LOCAL_LLM_CTX": "32768",
 
-        "LOCAL_AGENT_ROOT": "C:\\AI\\agent-sandbox"
+        "LOCAL_AGENT_ROOT": "C:\\AI\\agent-sandbox",
+
+        "LOCAL_LLM_HF_REPO": "unsloth/Qwen3-Coder-30B-A3B-GGUF",
+        "LOCAL_LLM_HF_QUANT": "UD-Q4_K_XL"
       }
     }
   }

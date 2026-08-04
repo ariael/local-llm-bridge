@@ -45,6 +45,7 @@ import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import local_agent
 import backend
+import model_update
 
 # --- Configuration (override via environment in .mcp.json) ------------------
 # Base URL of llama-server's OpenAI-compatible API. 127.0.0.1 on purpose, not
@@ -245,6 +246,20 @@ def stop_backend(force: bool = False) -> str:
     tools will transparently start it again next time they're used.
     """
     return backend.stop(force=force)
+
+
+@mcp.tool()
+def check_model_update() -> str:
+    """Check (read-only) whether a newer GGUF of the tracked model is available.
+
+    Queries Hugging Face for the tracked repo+quant (LOCAL_LLM_HF_REPO /
+    LOCAL_LLM_HF_QUANT) and compares against the local manifest. Downloads
+    nothing — reports up-to-date / update-available / not-tracked. Actually
+    fetching a newer model is a deliberate, ~20 GB step done via
+    `python server/model_update.py apply --commit` (asks first by being dry-run
+    by default), not from this tool.
+    """
+    return model_update.check()
 
 
 @mcp.tool()

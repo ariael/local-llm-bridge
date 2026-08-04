@@ -91,6 +91,32 @@ review on Claude.
 
 ---
 
+## Model updates
+
+`server/model_update.py` tracks a Hugging Face repo + quant
+(`LOCAL_LLM_HF_REPO`, `LOCAL_LLM_HF_QUANT`) and can pull a newer GGUF. Stdlib
+only — no `huggingface_hub` needed.
+
+- **Check (read-only, safe to schedule)** — the `check_model_update` MCP tool, or:
+  ```bash
+  python server/model_update.py check
+  ```
+  Compares the tracked file's LFS hash against a local manifest and reports
+  up-to-date / update-available / not-tracked. Downloads nothing.
+- **Apply (deliberate — downloads ~18 GB)** — dry-run by default; add `--commit`
+  to actually fetch. Resumable (HTTP Range), verifies size + SHA-256, writes a
+  manifest, then tells you to point `LOCAL_LLM_MODEL_PATH` at the new file and
+  `stop_backend` so the next start loads it:
+  ```bash
+  python server/model_update.py apply            # dry run: shows repo/file/size
+  python server/model_update.py apply --commit    # download + verify
+  ```
+
+The check is safe to run on a schedule (e.g. a Claude Code routine) so you're
+notified when a newer model ships; the download stays a deliberate, confirmed
+step because it's large and a new model should be re-verified
+(`Test-ToolCalling.ps1`) before you rely on it.
+
 ## Agent policy
 
 `run_local_agent` is the only tool that lets the local model *act* — a small
