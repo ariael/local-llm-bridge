@@ -72,6 +72,11 @@ def _chat(system, user, max_tokens, temperature):
         "max_tokens": int(max_tokens),
         "temperature": float(temperature),
         "stream": False,
+        # Qwen3 is a "thinking" model: left on, it spends the whole token budget
+        # in a <think> block (which llama.cpp routes to message.reasoning_content)
+        # and message.content comes back EMPTY. These tools are a fast worker path
+        # where we want the answer, not the reasoning — so disable thinking.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     data = json.dumps(payload).encode("utf-8")
     url = LLAMA_BASE.rstrip("/") + "/chat/completions"
@@ -93,7 +98,11 @@ def _chat(system, user, max_tokens, temperature):
     choices = body.get("choices") or []
     if not choices:
         raise RuntimeError("llama-server returned no choices: %s" % json.dumps(body)[:400])
-    text = (choices[0].get("message") or {}).get("content", "")
+    message = choices[0].get("message") or {}
+    # Prefer the real answer. Fall back to reasoning_content only if a model/template
+    # ignored enable_thinking and put everything in the reasoning channel — better a
+    # thinking dump than a silent empty string.
+    text = message.get("content") or message.get("reasoning_content") or ""
     usage = body.get("usage") or {}
     elapsed = time.time() - started
     # Attach a compact telemetry footer so Claude (and the user) can see the
