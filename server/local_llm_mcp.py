@@ -46,6 +46,7 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import local_agent
 import backend
 import model_update
+import stats
 
 # --- Configuration (override via environment in .mcp.json) ------------------
 # Base URL of llama-server's OpenAI-compatible API. 127.0.0.1 on purpose, not
@@ -123,17 +124,29 @@ def _chat(system, user, max_tokens, temperature):
         usage.get("completion_tokens", 0),
         elapsed,
     )
-    return text, footer
+    return text, footer, {
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+        "elapsed_s": elapsed,
+    }
+
+
+_WORKER_SYSTEM = (
+    "You are a fast local worker model. Do exactly the requested task and "
+    "nothing more. No preamble, no explanation, no apologies. If asked for "
+    "JSON, output only valid JSON."
+)
 
 
 @mcp.tool()
-def delegate(task: str, input_text: str = "", max_tokens: int = 1024, temperature: float = 0.2) -> str:
+def delegate(task: str, input_text: str = "", max_tokens: int = 1024, temperature: float = 0.2, kind: str = "") -> str:
     """Offload a bounded subtask to the local Qwen model on the GPU.
 
     Use for tasks with a COMPACT result that you want back in context:
     summarizing, classifying, extracting fields to JSON, short rewrites, quick
     Q&A over a snippet. For bulky output (generated files, long rewrites) use
-    `transform_file` instead so the big text never enters your context.
+    `transform_file` instead so the big text never enters your context. For MANY
+    small items, use `delegate_batch` (one call, one compact result array).
 
     Args:
         task: The instruction for the local model (what to do).
@@ -142,19 +155,72 @@ def delegate(task: str, input_text: str = "", max_tokens: int = 1024, temperatur
         max_tokens: Cap on the local model's output length.
         temperature: Sampling temperature. Keep low (0.0-0.3) for deterministic
             extraction/classification.
+        kind: Optional short label for the task shape (e.g. "summarize",
+            "classify", "extract", "rewrite"). Only used for statistics grouping —
+            it makes `local_stats` show which task shapes work vs. fail.
     """
-    system = (
-        "You are a fast local worker model. Do exactly the requested task and "
-        "nothing more. No preamble, no explanation, no apologies. If asked for "
-        "JSON, output only valid JSON."
-    )
     user = task if not input_text else (task + "\n\n---\n" + input_text)
-    text, footer = _chat(system, user, max_tokens, temperature)
+    try:
+        text, footer, u = _chat(_WORKER_SYSTEM, user, max_tokens, temperature)
+    except Exception:
+        stats.record("delegate", task, "error", elapsed_s=0, kind=kind)
+        raise
+    stats.record("delegate", task, "ok", u["prompt_tokens"],
+                 u["completion_tokens"], u["elapsed_s"], kind=kind)
     return text + footer
 
 
 @mcp.tool()
-def transform_file(instruction: str, path: str, output_path: str = "", max_tokens: int = 8192, temperature: float = 0.2) -> str:
+def delegate_batch(tasks: list, shared_instruction: str = "", max_tokens: int = 512, temperature: float = 0.2, kind: str = "") -> str:
+    """Run MANY small tasks in ONE call — the efficient path for bulk work.
+
+    Instead of N separate `delegate` calls (N tool round-trips, N results into your
+    context), this processes a list locally and returns one compact JSON array.
+    Ideal for "classify each of these 40 lines", "summarize each of these snippets",
+    "extract fields from each record". Each item is independent.
+
+    Args:
+        tasks: A list of items. If `shared_instruction` is given, each item is the
+            INPUT that the shared instruction operates on (e.g. instruction=
+            "sentiment as one word", items=[review1, review2, ...]). If it's empty,
+            each item is treated as a complete standalone task string.
+        shared_instruction: One instruction applied to every item (optional).
+        max_tokens: Per-item cap on the local model's output length.
+        temperature: Sampling temperature. Keep low for classification/extraction.
+        kind: Optional task-shape label for statistics (see `delegate`).
+
+    Returns compact JSON: {results:[{i, result}|{i, error}], n, failed, tokens...}.
+    Keep per-item outputs short — the point of batching is many small results.
+    """
+    if not isinstance(tasks, list) or not tasks:
+        raise RuntimeError("`tasks` must be a non-empty list.")
+    results = []
+    tot_in = tot_out = failed = 0
+    started = time.time()
+    for i, item in enumerate(tasks):
+        item = "" if item is None else str(item)
+        user = item if not shared_instruction else (shared_instruction + "\n\n---\n" + item)
+        try:
+            text, _footer, u = _chat(_WORKER_SYSTEM, user, max_tokens, temperature)
+            results.append({"i": i, "result": text.strip()})
+            tot_in += u["prompt_tokens"]
+            tot_out += u["completion_tokens"]
+        except Exception as exc:
+            results.append({"i": i, "error": str(exc)[:200]})
+            failed += 1
+    elapsed = time.time() - started
+    status = "ok" if failed == 0 else ("partial" if failed < len(tasks) else "error")
+    stats.record("delegate_batch", shared_instruction or (str(tasks[0])[:120]),
+                 status, tot_in, tot_out, elapsed, kind=kind,
+                 extra={"n": len(tasks), "failed": failed})
+    return json.dumps({
+        "results": results, "n": len(tasks), "failed": failed,
+        "tokens_in": tot_in, "tokens_out": tot_out, "elapsed_s": round(elapsed, 1),
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def transform_file(instruction: str, path: str, output_path: str = "", max_tokens: int = 8192, temperature: float = 0.2, kind: str = "") -> str:
     """Read a file, have the local Qwen model transform it, write the result to
     disk, and return only a SHORT status line.
 
@@ -162,19 +228,25 @@ def transform_file(instruction: str, path: str, output_path: str = "", max_token
     straight to a file and never enters your context. Use it for generated code,
     rewritten documents, bulk reformatting, translation of a whole file, etc.
 
+    Truncation safety: if the model hits `max_tokens` the output is likely cut off.
+    In that case the result is written to `<path>.partial` (NOT over the original)
+    and a WARNING is returned — re-run with a higher max_tokens. Bump max_tokens for
+    large files; the output must fit in it.
+
     Args:
         instruction: What transformation to apply to the file's contents.
         path: Absolute path of the input file to read.
         output_path: Where to write the result. Defaults to `path` (in-place).
-        max_tokens: Cap on the local model's output length.
+        max_tokens: Cap on the local model's output length. Must exceed the
+            expected output size, or the file will be truncated.
         temperature: Sampling temperature.
+        kind: Optional task-shape label for statistics (see `delegate`).
     """
     if not os.path.isfile(path):
         raise RuntimeError("Input file not found: %s" % path)
     with open(path, "r", encoding="utf-8") as fh:
         content = fh.read()
 
-    target = output_path or path
     system = (
         "You are a fast local worker model that transforms file contents. "
         "Output ONLY the full transformed file content — no preamble, no code "
@@ -182,15 +254,37 @@ def transform_file(instruction: str, path: str, output_path: str = "", max_token
         "instruction."
     )
     user = "INSTRUCTION:\n%s\n\n---FILE CONTENT---\n%s" % (instruction, content)
-    text, footer = _chat(system, user, max_tokens, temperature)
+    try:
+        text, footer, u = _chat(system, user, max_tokens, temperature)
+    except Exception:
+        stats.record("transform_file", instruction, "error", elapsed_s=0,
+                     kind=kind, extra={"path": path})
+        raise
 
+    # If the model spent the whole budget, the output was almost certainly cut
+    # off. Never silently overwrite the source with a truncated file: divert to a
+    # .partial sibling and warn instead.
+    truncated = u["completion_tokens"] >= max_tokens
+    target = output_path or path
+    diverted = truncated and not output_path
+    if diverted:
+        target = path + ".partial"
     with open(target, "w", encoding="utf-8") as fh:
         fh.write(text)
+
+    stats.record("transform_file", instruction, "truncated" if truncated else "ok",
+                 u["prompt_tokens"], u["completion_tokens"], u["elapsed_s"], kind=kind,
+                 extra={"path": path, "output_path": target, "out_chars": len(text),
+                        "truncated": truncated})
+    if truncated:
+        where = ("%s (original left intact)" % target) if diverted else target
+        return ("WARNING: output likely TRUNCATED — hit max_tokens=%d. Wrote %d chars to "
+                "%s. Re-run with a higher max_tokens.%s" % (max_tokens, len(text), where, footer))
     return "OK: wrote %d chars to %s%s" % (len(text), target, footer)
 
 
 @mcp.tool()
-def run_local_agent(task: str, workdir: str = "", max_steps: int = 12, timeout_s: int = 180, allow_shell: bool = False, allow_web: bool = False) -> str:
+def run_local_agent(task: str, workdir: str = "", max_steps: int = 12, timeout_s: int = 180, allow_shell: bool = False, allow_web: bool = False, kind: str = "") -> str:
     """Run the local Qwen model as a confined SUB-AGENT for a bounded task.
 
     Unlike `delegate` (a single completion), this runs a small ReAct loop: the
@@ -215,6 +309,7 @@ def run_local_agent(task: str, workdir: str = "", max_steps: int = 12, timeout_s
     """
     ok, msg = backend.ensure()  # spin up llama-server on demand
     if not ok:
+        stats.record("run_local_agent", task, "backend_error", elapsed_s=0, kind=kind)
         return json.dumps({"status": "backend_error", "summary": msg}, ensure_ascii=False)
     backend.touch()
     result = local_agent.run_agent(
@@ -222,7 +317,101 @@ def run_local_agent(task: str, workdir: str = "", max_steps: int = 12, timeout_s
         timeout_s=timeout_s, allow_shell=allow_shell, allow_web=allow_web,
     )
     backend.touch()
+    stats.record("run_local_agent", task, result.get("status", "?"),
+                 result.get("prompt_tokens", 0), result.get("completion_tokens", 0),
+                 result.get("elapsed_s", 0), kind=kind,
+                 extra={"steps_used": result.get("steps_used"),
+                        "files_changed": result.get("files_changed")})
     return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def mark_outcome(outcome: str, note: str = "", kind: str = "") -> str:
+    """Record whether the LAST local-model result was actually usable.
+
+    Call this right after you VERIFY a `delegate` / `transform_file` /
+    `run_local_agent` result, so the statistics reflect real usefulness — not just
+    whether the call completed. This is the signal that answers "what does the local
+    model actually handle well?" and drives future tuning of what to delegate.
+
+    Args:
+        outcome: "accepted" (kept the result as-is), "rejected" (unusable, did it
+            myself), or "redone" (kept the idea but had to fix/redo it).
+        note: Optional one-line reason (what was wrong / why it worked).
+        kind: Optional task-shape label matching the call you're grading.
+    """
+    stats.record_outcome(outcome, note=note, kind=kind)
+    return "recorded outcome: %s" % (outcome or "").strip().lower()
+
+
+@mcp.tool()
+def copy_in(source_path: str, dest: str = "") -> str:
+    """Copy a file from anywhere on disk INTO the agent sandbox.
+
+    Use to stage inputs before a `run_local_agent` task: the agent is hard-confined
+    to LOCAL_AGENT_ROOT and cannot read the rest of the disk, so anything it needs
+    must be copied in first. The destination is confined under the sandbox root —
+    it cannot escape via `..`, absolute paths, or symlinks.
+
+    Args:
+        source_path: Absolute path of the file to copy in (read from anywhere).
+        dest: Destination path RELATIVE to the sandbox root. Defaults to the
+            source file's basename at the sandbox root.
+    """
+    import shutil
+    if not os.path.isfile(source_path):
+        raise RuntimeError("Source file not found: %s" % source_path)
+    rel = dest or os.path.basename(source_path)
+    try:
+        target = local_agent._confine(local_agent.AGENT_ROOT, rel)
+    except ValueError as exc:
+        raise RuntimeError("Refused: %s" % exc)
+    os.makedirs(os.path.dirname(target) or local_agent.AGENT_ROOT, exist_ok=True)
+    shutil.copy2(source_path, target)
+    return "OK: copied %s -> %s (in sandbox)" % (source_path, target)
+
+
+@mcp.tool()
+def copy_out(source: str, dest_path: str, overwrite: bool = False) -> str:
+    """Copy a result file OUT of the agent sandbox to a chosen path on disk.
+
+    Use to retrieve what `run_local_agent` produced. The source is confined to the
+    sandbox root; the destination is any path you choose. Refuses to overwrite an
+    existing destination unless overwrite=true, so a stray call can't clobber your
+    files.
+
+    Args:
+        source: Path RELATIVE to the sandbox root (the file the agent produced).
+        dest_path: Absolute destination path to copy it to.
+        overwrite: Allow overwriting an existing destination file. Default False.
+    """
+    import shutil
+    try:
+        src = local_agent._confine(local_agent.AGENT_ROOT, source)
+    except ValueError as exc:
+        raise RuntimeError("Refused: %s" % exc)
+    if not os.path.isfile(src):
+        raise RuntimeError("Sandbox file not found: %s" % source)
+    if os.path.exists(dest_path) and not overwrite:
+        raise RuntimeError("Destination exists (pass overwrite=true to replace): %s" % dest_path)
+    os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+    shutil.copy2(src, dest_path)
+    return "OK: copied %s -> %s (out of sandbox)" % (src, dest_path)
+
+
+@mcp.tool()
+def local_stats(limit: int = 0) -> str:
+    """Report telemetry on local-model delegations: success rates, tokens burned
+    locally, estimated Anthropic tokens saved, and a per-tool breakdown.
+
+    Every `delegate`, `transform_file`, and `run_local_agent` call is logged. Use
+    this to see what the local model handles well vs. where it fails — the data to
+    tune what gets delegated. Cost is free (local GPU); this reads a local file.
+
+    Args:
+        limit: If > 0, summarize only the last N calls. 0 = all history.
+    """
+    return json.dumps(stats.summary(limit=limit or None), ensure_ascii=False, indent=2)
 
 
 @mcp.tool()

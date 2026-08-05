@@ -201,6 +201,13 @@ def _chat(messages, tools, temperature):
         return json.loads(resp.read().decode("utf-8"))
 
 
+def _add_usage(totals, body):
+    """Accumulate token usage from one /chat/completions body into `totals`."""
+    usage = body.get("usage") or {}
+    totals["prompt_tokens"] += usage.get("prompt_tokens", 0)
+    totals["completion_tokens"] += usage.get("completion_tokens", 0)
+
+
 # --------------------------------------------------------------------------- #
 # The agent loop
 # --------------------------------------------------------------------------- #
@@ -239,6 +246,7 @@ def run_agent(task, workdir=None, max_steps=12, timeout_s=180,
 
     changed = set()
     log = []
+    usage = {"prompt_tokens": 0, "completion_tokens": 0}
     started = time.time()
     status = "incomplete"
     summary = ""
@@ -253,6 +261,7 @@ def run_agent(task, workdir=None, max_steps=12, timeout_s=180,
             status = "backend_error"
             summary = "chat call failed: %s" % exc
             break
+        _add_usage(usage, body)
 
         choice = (body.get("choices") or [{}])[0]
         msg = choice.get("message") or {}
@@ -323,6 +332,8 @@ def run_agent(task, workdir=None, max_steps=12, timeout_s=180,
         "files_changed": sorted(changed),
         "steps_used": len(log),
         "elapsed_s": round(time.time() - started, 1),
+        "prompt_tokens": usage["prompt_tokens"],
+        "completion_tokens": usage["completion_tokens"],
         "workspace": workspace,
         "log": log,
     }

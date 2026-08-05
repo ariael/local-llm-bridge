@@ -35,9 +35,14 @@ translate Anthropic↔OpenAI for the "run Claude *on* Qwen" path.
 
 | Tool | Returns | Use for |
 |---|---|---|
-| `delegate(task, input_text?, max_tokens?, temperature?)` | the model's answer (goes into Claude's context) | **compact** results: summaries, classification, field extraction to JSON, short rewrites, Q&A over a snippet |
-| `transform_file(instruction, path, output_path?, ...)` | a short status line only | **bulky** output: generated code, whole-file rewrites, bulk reformatting, translating a file — the big text is written to disk and never enters Claude's context |
+| `delegate(task, input_text?, max_tokens?, temperature?, kind?)` | the model's answer (goes into Claude's context) | **compact** results: summaries, classification, field extraction to JSON, short rewrites, Q&A over a snippet |
+| `delegate_batch(tasks[], shared_instruction?, ...)` | one compact JSON array of per-item results | **many small items** in ONE call: classify/summarize/extract over a list — avoids N round-trips and N results in context |
+| `transform_file(instruction, path, output_path?, ..., kind?)` | a short status line only (or a truncation **warning**) | **bulky** output: generated code, whole-file rewrites, bulk reformatting, translating a file — the big text is written to disk and never enters Claude's context |
 | `run_local_agent(task, workdir?, max_steps?, timeout_s?, allow_shell?, allow_web?)` | compact JSON: summary + files_changed + step log | a bounded **multi-step** subtask where the model reads/writes files itself in a sandbox (scaffold files, mechanical multi-file edits) — see [Agent policy](#agent-policy) |
+| `copy_in(source_path, dest?)` | status line | stage an input file **into** the sandbox before a `run_local_agent` task (the agent can't see the rest of the disk) |
+| `copy_out(source, dest_path, overwrite?)` | status line | retrieve a result file **out of** the sandbox to a chosen path |
+| `local_stats(limit?)` | JSON summary | what the local model handles well vs. fails, tokens burned locally, **estimated Anthropic tokens saved** — see [Statistics](#statistics) |
+| `mark_outcome(outcome, note?, kind?)` | status line | after verifying a result, record whether it was **accepted / rejected / redone** — the real "did it work" signal feeding [Statistics](#statistics) |
 | `start_backend()` | status line | pre-warm the model before a batch (optional — delegation tools auto-start it) |
 | `stop_backend(force?)` | status line | **free the GPU** immediately (e.g. before gaming) |
 | `health()` | up/down, whether we own it, idle time | check without starting anything |
@@ -88,6 +93,47 @@ Good candidates to delegate: summarization, classification/labelling, JSON
 extraction, log parsing, boilerplate/scaffold generation, mechanical
 refactors, whole-file translation. Keep architecture, hard reasoning, and final
 review on Claude.
+
+### Auto-delegation (no need to ask)
+
+[`CLAUDE.md`](CLAUDE.md) tells every Claude session in this repo to route qualifying
+subtasks to the local model **reflexively, without being asked** (aggressive
+posture: attempt locally first, then verify). There is no background service and no
+scheduler — a session only acts during its own turn, so the policy doc *is* the
+"router". Claude always verifies the local output; free tokens are paid back with
+disciplined review, never blind trust.
+
+---
+
+## Statistics
+
+Every `delegate` / `delegate_batch` / `transform_file` / `run_local_agent` call is
+logged, append-only, to `logs/local_llm_stats.jsonl` (git-ignored) by
+`server/stats.py`: tool, `kind`, task snippet, status, tokens in/out, elapsed, and an
+**estimate of the Anthropic tokens saved**. Call `local_stats` for a rolled-up view:
+
+```jsonc
+{ "calls": 42, "success_rate": 0.83,          // success = the call COMPLETED cleanly
+  "est_anthropic_tokens_saved": 128400,
+  "by_tool":   { "delegate": {"calls": 30, "success_rate": 0.9, ...}, ... },
+  "by_kind":   { "classify": {"calls": 18, "success_rate": 1.0, "accepted_rate": 0.94}, ... },
+  "by_status": { "ok": 28, "done": 7, "max_steps": 4, "timeout": 3 },
+  "quality":   { "with_outcome": 20, "accepted": 17, "accepted_rate": 0.85,
+                 "by_outcome": { "accepted": 17, "rejected": 2, "redone": 1 } } }
+```
+
+**Two levels of "works".** `success_rate` only means the call *completed*. Whether the
+result was actually usable is a separate signal: after verifying a result, Claude
+calls `mark_outcome(accepted | rejected | redone)`, and that feeds `accepted_rate`
+(overall and per `kind`). Pass a `kind` label ("summarize", "classify", "extract",
+"scaffold"…) on delegation calls so `by_kind` shows which task *shapes* the local
+model handles well vs. which to stop delegating.
+
+**Honest token math.** "Saved" is a proxy, not a billing number. For `transform_file`
+and `run_local_agent` the input isn't in Claude's context, so prompt+completion both
+count as saved. For `delegate`/`delegate_batch` Claude already held the input it
+passed in, so only the *completion* counts — otherwise the number flatters itself.
+Override the log path with `LOCAL_LLM_STATS`.
 
 ---
 
@@ -201,24 +247,25 @@ classification, a JSON extraction, and an uppercased temp file).
 ## Production status & backlog
 
 Done:
-- [x] MCP server with `delegate` / `transform_file` / `health` (`server/local_llm_mcp.py`)
+- [x] MCP server: `delegate` / `delegate_batch` / `transform_file` /
+      `run_local_agent` / `copy_in` / `copy_out` / `health` (`server/local_llm_mcp.py`)
 - [x] Standalone persistent backend launcher (`scripts/Start-LlamaServer.ps1`)
+- [x] On-demand GPU lifecycle with idle auto-stop (`server/backend.py`)
+- [x] Model check/update, self-throttled to ~monthly (`server/model_update.py`)
+- [x] Persistent statistics + acceptance outcomes (`server/stats.py`, `local_stats`)
+- [x] Aggressive auto-delegation policy ([`CLAUDE.md`](CLAUDE.md))
+- [x] Smoke test covering the full chain (`scripts/smoke_test.py`)
 - [x] Registration example (`.mcp.json.example`)
 
 To do:
-- [ ] **Model check/update** — confirm the current Qwen A3B version on the box
-      (LM Studio / HF). As of 2026-08 there is no "Qwen3.8"; current A3B-class
-      releases are `Qwen3-30B-A3B-Instruct-2507`, `Qwen3-Coder-30B-A3B`, and
-      `Qwen3-Next-80B-A3B`. Pick one, download the GGUF, update `-ModelPath`,
-      then re-run `C:\AI\local-llm\Test-ToolCalling.ps1` to confirm tool-calling.
-- [ ] **Run the backend as a service** (Windows scheduled task at logon, or NSSM)
-      so the MCP tools always have a backend without a manual window.
-- [ ] **Smoke test** the full chain: `health`, then a `delegate` summarize, then
-      a `transform_file` on a scratch file; confirm token footer looks sane.
-- [ ] **Delegation policy** — optionally add a short skill / CLAUDE.md snippet in
-      consumer projects telling Claude *when* to reach for these tools.
-- [ ] Consider a `classify`/`extract_json` convenience tool if `delegate` prompts
-      get repetitive.
+- [ ] Once real usage accrues, review `local_stats` `by_kind`/`accepted_rate` and
+      tighten `CLAUDE.md` about any task shape the local model keeps failing.
+
+Deliberately **not** doing (see design notes):
+- Backend as an always-on Windows service — contradicts sharing the GPU with games;
+  the on-demand lifecycle is the point.
+- Separate `classify` / `extract_json` tools — `delegate_batch` covers these without
+  growing the API surface.
 
 ---
 

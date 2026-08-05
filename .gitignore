@@ -3,5 +3,6 @@ __pycache__/
 .venv/
 venv/
 *.log
+logs/
 reports/*.tmp
 .mcp.json
