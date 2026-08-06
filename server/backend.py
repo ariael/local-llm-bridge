@@ -152,6 +152,33 @@ def ensure():
         return False, "backend did not become ready within %ds (see %s)" % (STARTUP_TIMEOUT_S, _LOG_FILE)
 
 
+def warm():
+    """Fire-and-forget prewarm: launch the backend but do NOT wait for /health.
+
+    Intended for a SessionStart hook — kicks off the model load (~15s) in the
+    background so the first delegation is ready, without delaying session start.
+    Returns (ok, message).
+    """
+    if _health_ok():
+        _start_watchdog()
+        touch()
+        return True, "already up"
+    if not AUTOSTART:
+        return False, "LOCAL_LLM_AUTOSTART is off — not warming"
+    with _lock:
+        if _health_ok():
+            touch()
+            return True, "already up"
+        if not os.path.isfile(LLAMA_EXE):
+            return False, "llama-server not found: %s" % LLAMA_EXE
+        if not os.path.isfile(MODEL_PATH):
+            return False, "model not found: %s" % MODEL_PATH
+        pid = _launch()
+        _start_watchdog()
+        touch()
+        return True, "warming (pid %d), loading in background" % pid
+
+
 def stop(force=False):
     """Stop the backend we launched (frees the GPU). Returns a message.
 
@@ -203,13 +230,18 @@ if __name__ == "__main__":
     # Standalone CLI so a SessionEnd hook can free the GPU when Claude Code exits:
     #   python backend.py stop          (kills only the backend we started)
     #   python backend.py stop --force   (kill even if started elsewhere)
-    #   python backend.py start | status
+    #   python backend.py start           (launch and wait for /health)
+    #   python backend.py start --nowait  (fire-and-forget prewarm; SessionStart hook)
+    #   python backend.py status
     import sys
     _action = sys.argv[1] if len(sys.argv) > 1 else "status"
     if _action == "stop":
         print(stop(force=("--force" in sys.argv)))
     elif _action == "start":
-        ok, msg = ensure()
+        if "--nowait" in sys.argv:
+            ok, msg = warm()
+        else:
+            ok, msg = ensure()
         print(("OK: " if ok else "FAILED: ") + msg)
     else:
         print(status())

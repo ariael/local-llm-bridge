@@ -72,11 +72,26 @@ python C:/GitHub/local-llm-bridge/server/backend.py stop     # kill our backend
 python C:/GitHub/local-llm-bridge/server/backend.py status   # DOWN/UP, no side effects
 ```
 
+**Prewarm the GPU when Claude Code starts.** To route work locally by default,
+warm the model at session start instead of paying the ~15s load on the first
+delegation. `start --nowait` fires the launch and returns immediately (the model
+finishes loading in the background), so it won't delay session start:
+
+```bash
+python C:/GitHub/local-llm-bridge/server/backend.py start --nowait  # fire-and-forget prewarm
+python C:/GitHub/local-llm-bridge/server/backend.py start           # launch and wait for /health
+```
+
 ```json
 // ~/.claude/settings.json
-"hooks": { "SessionEnd": [ { "hooks": [
-  { "type": "command", "command": "python C:/GitHub/local-llm-bridge/server/backend.py stop" }
-] } ] }
+"hooks": {
+  "SessionStart": [ { "hooks": [
+    { "type": "command", "command": "python C:/GitHub/local-llm-bridge/server/backend.py start --nowait" }
+  ] } ],
+  "SessionEnd": [ { "hooks": [
+    { "type": "command", "command": "python C:/GitHub/local-llm-bridge/server/backend.py stop" }
+  ] } ]
+}
 ```
 
 ### Why two tools — the token-saving rule
