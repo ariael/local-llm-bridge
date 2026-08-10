@@ -66,7 +66,7 @@ async def main():
 
     health = await _call("health", {})
     print("health      :", health)
-    if not health.startswith("UP:"):
+    if not health.startswith("UP"):
         print("  ! backend not up — start scripts\\Start-LlamaServer.ps1 -Commit")
         return 1
 
