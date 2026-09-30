@@ -32,6 +32,7 @@ Dependencies: only `mcp` (pip install mcp). HTTP uses the standard library so
 there is nothing else to install.
 """
 
+import http.client
 import json
 import os
 import time
@@ -99,15 +100,26 @@ def _chat(system, user, max_tokens, temperature):
     )
 
     started = time.time()
-    try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as exc:
-        raise RuntimeError(
-            "Cannot reach local llama-server at %s (%s). "
-            "Is it running? Start it with scripts\\Start-LlamaServer.ps1 -Commit."
-            % (url, exc)
-        )
+    # Long generations (~90 s+) sometimes end with the connection reset even though
+    # llama-server finished (WinError 10054), or the server died mid-request. Retry
+    # once after re-checking/restarting the backend instead of surfacing a raw
+    # socket error; a second failure becomes a readable RuntimeError.
+    body = None
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+            break
+        except (urllib.error.URLError, ConnectionError, http.client.HTTPException, TimeoutError) as exc:
+            if attempt == 1 and not isinstance(exc, TimeoutError):
+                ok, msg = backend.ensure()
+                if ok:
+                    continue
+            raise RuntimeError(
+                "Cannot reach local llama-server at %s (%s: %s)%s. "
+                "Is it running? Start it with scripts\\Start-LlamaServer.ps1 -Commit."
+                % (url, type(exc).__name__, exc, " after retry" if attempt == 2 else "")
+            )
 
     choices = body.get("choices") or []
     if not choices:
