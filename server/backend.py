@@ -38,7 +38,7 @@ IDLE_STOP_S = int(os.environ.get("LOCAL_LLM_IDLE_STOP_S", "600"))  # 0 disables
 STARTUP_TIMEOUT_S = int(os.environ.get("LOCAL_LLM_STARTUP_TIMEOUT_S", "240"))
 
 LLAMA_EXE = os.environ.get("LOCAL_LLM_LLAMA_EXE", r"C:\AI\llama.cpp\vulkan\llama-server.exe")
-MODEL_PATH = os.environ.get("LOCAL_LLM_MODEL_PATH", r"C:\AI Models\unsloth\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf")
+MODEL_PATH = os.environ.get("LOCAL_LLM_MODEL_PATH", r"C:\AI Models\bartowski\bottlecapai_ThinkingCap-Qwen3.6-27B-IQ4_XS.gguf")
 MODEL_ALIAS = os.environ.get("LOCAL_LLM_MODEL", "local-model")
 CTX_SIZE = os.environ.get("LOCAL_LLM_CTX", "32768")
 
