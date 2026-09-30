@@ -58,6 +58,8 @@ MODEL = os.environ.get("LOCAL_LLM_MODEL", "local-model")
 # Per-request timeout (seconds). Long default: a big prefill on a 35B MoE plus
 # generation can take a while on a 24 GB card.
 TIMEOUT = float(os.environ.get("LOCAL_LLM_TIMEOUT", "300"))
+THINKING = os.environ.get("LOCAL_LLM_THINKING", "1") not in ("0", "false", "False", "")
+THINK_HEADROOM = int(os.environ.get("LOCAL_LLM_THINK_HEADROOM", "3000"))
 
 mcp = MCPServer("local-llm")
 
@@ -81,14 +83,14 @@ def _chat(system, user, max_tokens, temperature):
     payload = {
         "model": MODEL,
         "messages": messages,
-        "max_tokens": int(max_tokens),
+        "max_tokens": int(max_tokens) + (THINK_HEADROOM if THINKING else 0),
         "temperature": float(temperature),
         "stream": False,
-        # Qwen3 is a "thinking" model: left on, it spends the whole token budget
-        # in a <think> block (which llama.cpp routes to message.reasoning_content)
-        # and message.content comes back EMPTY. These tools are a fast worker path
-        # where we want the answer, not the reasoning — so disable thinking.
-        "chat_template_kwargs": {"enable_thinking": False},
+        # Qwen3 is a "thinking" model: left on with a tight budget, it spends all
+        # tokens in a <think> block (llama.cpp routes it to message.reasoning_content)
+        # and message.content comes back EMPTY. So thinking is opt-in
+        # (LOCAL_LLM_THINKING=1) and then gets THINK_HEADROOM extra tokens.
+        "chat_template_kwargs": {"enable_thinking": THINKING},
     }
     data = json.dumps(payload).encode("utf-8")
     url = LLAMA_BASE.rstrip("/") + "/chat/completions"
