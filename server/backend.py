@@ -40,7 +40,12 @@ STARTUP_TIMEOUT_S = int(os.environ.get("LOCAL_LLM_STARTUP_TIMEOUT_S", "240"))
 LLAMA_EXE = os.environ.get("LOCAL_LLM_LLAMA_EXE", r"C:\AI\llama.cpp\vulkan\llama-server.exe")
 MODEL_PATH = os.environ.get("LOCAL_LLM_MODEL_PATH", r"C:\AI Models\bartowski\bottlecapai_ThinkingCap-Qwen3.6-27B-IQ4_XS.gguf")
 MODEL_ALIAS = os.environ.get("LOCAL_LLM_MODEL", "local-model")
-CTX_SIZE = os.environ.get("LOCAL_LLM_CTX", "32768")
+CTX_SIZE = os.environ.get("LOCAL_LLM_CTX", "16384")
+# Keep the MoE expert weights of the first N layers in system RAM, leaving VRAM
+# free for other GPU users (Chrome video, games); ~0.5 GB per layer for the
+# 35B-A3B model. 0 = fill the card. (--fit would be nicer but asserts on the
+# Vulkan build: GGML_ASSERT(ctx->mem_buffer != NULL).)
+N_CPU_MOE = int(os.environ.get("LOCAL_LLM_N_CPU_MOE", "0"))
 
 _PID_FILE = os.path.join(tempfile.gettempdir(), "local_llm_backend.pid")
 _LOG_FILE = os.path.join(tempfile.gettempdir(), "local_llm_backend.log")
@@ -172,6 +177,8 @@ def _launch():
         "--port", str(port), "--host", host, "--ctx-size", str(CTX_SIZE),
         "--flash-attn", "on", "--n-gpu-layers", "99", "--cache-reuse", "256",
     ]
+    if N_CPU_MOE > 0:
+        args += ["--n-cpu-moe", str(N_CPU_MOE)]
     # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP so killing the MCP server does
     # not take the model down mid-request; we manage its lifetime explicitly.
     flags = 0
